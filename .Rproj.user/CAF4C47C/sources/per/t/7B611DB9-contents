@@ -1,0 +1,729 @@
+library(gridExtra)
+library("ROSE")
+library(car)
+library(lubridate)
+library(glmnet)
+library(outliers)
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+library(MASS)
+library(randomForest)
+library(pROC)
+library(paletteer)
+library(ggthemes)
+library(class)
+
+#Load data
+data_original <- read.csv('ks-projects-201801.csv', header = T, na.string='')
+data <- read.csv('ks-projects-201801.csv', header = T, na.string='')
+summary(data)
+head(data, 2)
+
+#################################
+# NULL VALUES AND DATA CLEANING #
+#################################
+anyNA(data)
+colSums(is.na(data))
+sum(data$country == 'N,0"')
+identical(which(data$country == 'N,0"'), which(is.na(data$usd.pledged)))
+
+###########################
+# PLOT: Project by Status #
+state.freq <- data %>% group_by(state) %>% summarize(count=n()) %>% arrange(desc(count))
+state.freq$state <- factor(state.freq$state, levels=state.freq$state)
+ggplot(state.freq, aes(state, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Projects by Status") + xlab("Project Status") + ylab("Frequency") + 
+  geom_text(aes(label=count), vjust=-0.5)
+
+data <- data %>%
+  filter(state %in% c("failed", "canceled", "successful", "suspended")) %>% #Omitting live and undefined projects
+  mutate(state_bi = factor(ifelse(state == "successful", 1, 0))) %>% #Creating a factor -> 1 for a successful project, 0 otherwise
+  mutate(launch_year = year(launched)) %>% #We aren't interested in datetime in our case, just the year of the project
+  mutate(launched = date(launched)) #We are only interested in the date, as datetime is too detailed for our uses
+
+#########################
+# PLOT: Project by Year #
+year.freq <- data %>% group_by(year=year(launched)) %>% summarize(count=n())
+ggplot(year.freq, aes(year, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects by Launch Year") + xlab("Year") + ylab("Frequency") + 
+  geom_text(aes(label=paste0(count)), vjust=-0.5)
+
+#########################
+# PLOT: Project by Goal #
+hist(data$usd_goal_real)
+
+data$range <- cut(data$usd_goal_real, breaks = c(0, 10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000, 100000))
+data$range <- as.character(data$range)
+
+range.freq <- data %>% group_by(range) %>% summarize(count=n())
+ggplot(range.freq, aes(range, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects by Goal") + xlab("Usd Goal Real") + ylab("Frequency") +
+  scale_x_discrete(labels = c("10000", "20000", "30000", "40000", "50000", "60000", "70000", "80000", "90000", "100000"))
+
+
+############################
+# PLOT: Project by Country #
+country.freq <- data %>% group_by(country) %>% summarize(count=n())
+ggplot(country.freq, aes(country, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects by Country") + xlab("Country") + ylab("Frequency") + 
+  geom_text(aes(label=paste0(count)), vjust=-0.5)
+
+######################################
+# PLOT: Projects Success and Failure #
+bi.freq <- data %>% group_by(state_bi) %>% summarize(count=n())
+ggplot(bi.freq, aes(state_bi, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects Success and Failure") + xlab("State") + ylab("Frequency") + 
+  geom_text(aes(label=paste0(count)), vjust=-0.5)
+
+#################
+# Data Cleaning #
+europe <- c("DE", "FR", "NL", "IT", "ES", "SE", "DK", "IE", "CH", "NO", "BE", "AT", "LU")
+usa_data <- data[data$country == "US", ]
+
+data <- data %>%
+  filter(!(year(launched) %in% c(1970, 2018))) %>% #We remove the projects from 1970 and 2018
+  filter(!(country == 'N,0"')) %>% #We remove the projects with missing information about the countries
+  filter(!is.na(name)) %>% #Remove 4 row with name isNa
+  filter(country %in% europe) %>% #Remove the country not in EU
+  filter(usd_goal_real > 1000 & usd_goal_real < 100000)
+
+usa_data <- usa_data %>%
+  filter(!(year(launched) %in% c(1970, 2018))) %>% #We remove the projects from 1970 and 2018
+  filter(!(country == 'N,0"')) %>% #We remove the projects with missing information about the countries
+  filter(!is.na(name)) %>% #Remove 4 row with name isNa
+  filter(usd_goal_real > 1000 & usd_goal_real < 100000)
+
+
+####################################
+# PLOT: Distribution over state_bi #
+prop.table(table(data$state_bi))
+
+######################################
+# PLOT: Projects Success and Failure #
+bi.freq <- data %>% group_by(state_bi) %>% summarize(count=n())
+ggplot(bi.freq, aes(state_bi, count, fill=count)) + geom_bar(stat="identity") + 
+  ggtitle("Number of Projects Success and Failure") + xlab("State") + ylab("Frequency") + 
+  geom_text(aes(label=paste0(count)), vjust=-0.5)
+
+##############################
+# PLOT: Success rate by year #
+success_rate <- data %>%
+  group_by(launch_year) %>%
+  summarize(success_percentage = mean(state_bi == 1) * 100)
+
+ggplot(success_rate, aes(x = launch_year, y = success_percentage)) +
+  geom_bar(stat="identity", fill="#2596be") +
+  ggtitle("Success rate by Year") +
+  xlab("Year") +
+  ylab("Success rate")
+
+##############################
+# PLOT: Success rate by Category #
+success_rate <- data %>%
+  group_by(main_category) %>%
+  summarize(success_percentage = mean(state_bi == 1) * 100)
+
+ggplot(success_rate, aes(x = main_category, y = success_percentage)) +
+  geom_bar(stat="identity", fill="#2596be") +
+  ggtitle("Success rate by Category") +
+  xlab("Category") +
+  ylab("Success rate")
+
+##############################
+# PLOT: Success rate by Country #
+success_rate <- data %>%
+  group_by(country) %>%
+  summarize(success_percentage = mean(state_bi == 1) * 100)
+
+ggplot(success_rate, aes(x = country, y = success_percentage)) +
+  geom_bar(stat="identity", fill="#2596be") +
+  ggtitle("Success rate by Country") +
+  xlab("Country") +
+  ylab("Success rate")
+
+mean(success_rate$success_percentage)
+
+
+########################
+# PLOT: Main Category  #
+data <- data %>%
+  mutate(bi_cat = ifelse(state == "successful", 1, 0))
+
+p5 <- data %>%
+  ggplot(aes(x = main_category, y = usd_goal_real, group = main_category)) + #We transform the fill to %
+  geom_boxplot(outlier.shape = NA) +
+  coord_cartesian(ylim = c(0, 100000)) +
+  scale_fill_paletteer_c("grDevices::BluGrn", direction = -1) +
+  xlab(element_blank()) +
+  ylab("Project funding goal ($)") +
+  ggtitle("Funding Goal Distribution by Categories") +
+  theme_fivethirtyeight() +
+  theme(axis.text.x = element_text(angle = 60, size = 10, vjust = 1, hjust = 0.8),
+        axis.title.y = element_text(vjust = 3),
+        panel.grid.major.y = element_line())
+
+p5
+
+#######################
+# Character to Number #
+#######################
+data$main_category <- as.numeric(factor(data$main_category)) # Main Category
+data$category <- as.numeric(factor(data$category)) # Category
+data$country <- as.numeric(factor(data$country)) # Country
+
+usa_data$main_category <- as.numeric(factor(usa_data$main_category)) # Main Category
+usa_data$category <- as.numeric(factor(usa_data$category)) # Category
+usa_data$country <- as.numeric(factor(usa_data$country)) # Country
+
+# create a column with the number of day between two column with two different date
+data$days_between <- as.numeric(difftime(data$deadline, data$launched, units = "days"))
+usa_data$days_between <- as.numeric(difftime(usa_data$deadline, usa_data$launched, units = "days"))
+
+######################
+# Correlation Matrix #
+######################
+# NON METTERE LE CATEGORICAL VARIABILI NELLA MATRICE
+cols <- c("main_category", "usd_goal_real", "category", "country", "launch_year", "days_between")
+
+data_correlation <- data[cols]
+new_data_num <- data.frame(lapply(data_correlation, as.integer))
+cor_matrix <- cor(new_data_num)
+corrplot(cor_matrix, method = "number", col = colorRampPalette(c("white", "black"))(100))
+
+##############
+# Prediction #
+##############
+cols <- c("main_category", "usd_goal_real", "launch_year", "category", "country", "days_between", "state_bi")
+new_data <- data[cols]
+
+Y <- data["state_bi"]
+
+new_usa_data <- usa_data[cols]
+Y_usa <- new_usa_data[, 7]
+X_usa <- new_usa_data[, -7]
+
+#new_data <- usa_data[cols]
+#Y <- new_data["state_bi"]
+
+summary(Y_usa)
+
+set.seed(23) # Set the seed for reproducibility
+
+test_proportion <- 0.3 # (e.g., 70% training, 30% testing)
+num_test_samples <- round(nrow(new_data) * test_proportion) # Samples for the test set based on the proportion
+test_indices <- sample(nrow(new_data), num_test_samples) # Randomly select the row indices for the test set
+
+# Create the training and test sets for features (X) using indexing
+X_train <- new_data[-test_indices, -7]
+X_test <- new_data[test_indices, -7]
+
+# Create the training and test sets for the target variable (Y)
+Y_train <- new_data[-test_indices, 7]
+Y_test <- new_data[test_indices, 7]
+
+# Print the dimensions of the training and test sets
+sprintf("X_train: %d Y_train: %d", dim(X_train)[1], length(Y_train))
+sprintf("X_test: %d Y_test: %d", dim(X_test)[1], length(Y_test))
+
+####################################
+# PLOT: Distribution over state_bi #
+prop.table(table(Y_test))
+prop.table(table(Y_train))
+
+ggplot(X_train, aes(factor(Y_train))) +
+  geom_bar(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Target Variable (Training Set)",
+       x = "Value", y = "Count")
+
+ggplot(X_test, aes(factor(Y_test))) +
+  geom_bar(fill = "lightblue", color = "black") +
+  labs(title = "Distribution of Target Variable (Test Set)",
+       x = "Value", y = "Count")
+
+a <- ggplot(X_train, aes(x = usd_goal_real, fill = data$state_bi)) +
+  geom_density(alpha = 0.4) +
+  ggtitle("Absolute Magnitude - Density Plot") +
+  xlab("Absolute Magnitude")
+a
+
+##############################################
+# Plot Function: accuracy, Confusion Matrix #
+plot_accuracy <- function(probabilities, Y, title) {
+  
+  predictions <- ifelse(probabilities > 0.6, 1, 0)
+  
+  matrix <- table(Y, predictions)
+  if (dim(matrix)[2] == 1){
+    matrix <- cbind(matrix, c(0, 0))
+  }
+  print(matrix)
+  
+  accuracy <- ( matrix[[1,1]] + matrix[[2,2]] ) / ( matrix[[1,1]] + matrix[[1,2]] + matrix[[2,1]] + matrix[[2,2]] )
+  precision <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[1,2]] )
+  recall <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[2,1]] )
+  err_rate <- ( matrix[[2,1]] + matrix[[1,2]] ) / ( matrix[[1,1]] + matrix[[1,2]] + matrix[[2,1]] + matrix[[2,2]] )
+  fn_rate <- matrix[[1,2]] / ( matrix[[1,2]] + matrix[[2,2]] )
+  
+  # Show results
+  print(paste("Err rate: ", err_rate))
+  print(paste("FN rate: ", fn_rate))
+  print(paste("Accuracy: ", accuracy))
+  print(paste("Recall: ", recall))
+  print(paste("Precision: ", precision))
+  
+  thresholds <- seq(0.1, 1, by = 0.1)  # Imposta le soglie da 0 a 1 con incrementi di 0.1
+  accuracy <- numeric(length(thresholds))
+  recall <- numeric(length(thresholds))
+  precision <- numeric(length(thresholds))
+  
+  for (i in 1:length(thresholds)) {
+    predicted_labels <- ifelse(probabilities > thresholds[i], 1, 0)
+    matrix <- table(Y, predicted_labels)
+    if (dim(matrix)[2] == 1){
+      matrix <- cbind(matrix, c(0, 0))
+    }
+    
+    accuracy[i] <- ( matrix[[1,1]] + matrix[[2,2]] ) / ( matrix[[1,1]] + matrix[[1,2]] + matrix[[2,1]] + matrix[[2,2]] )
+    precision[i] <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[1,2]] )
+    recall[i] <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[2,1]] )
+  }
+  
+  accuracy_df <- data.frame(Threshold = thresholds, Accuracy = accuracy)
+  acc <- ggplot(accuracy_df, aes(x = Threshold, y = Accuracy)) +
+    geom_line() +
+    geom_point() +
+    labs(x = "Threshold", y = "Accuracy", title = "Accuracy Curve")
+  
+  graph_df <- data.frame(Threshold = thresholds, Recall = recall, Precision = precision)
+  graph_df <- graph_df %>% filter(!is.na(Precision))
+  
+  prec_rec <- ggplot(graph_df, aes(x = Threshold)) +
+    geom_line(aes(y = Recall)) + 
+    geom_line(aes(y = Precision)) +
+    geom_point(aes(y = Recall)) +
+    geom_point(aes(y = Precision)) +
+    labs(title = "Precision & Recall",
+         x = "Threshold",
+         y = "Precision & Recall") +
+    guides(color = guide_legend(title = "Curve", labels = c("Recall", "Precision")))
+  
+  
+  grid.arrange(acc, prec_rec, nrow = 1)
+  
+  roc.out <- roc(Y, probabilities, levels=c(0, 1))
+  plot(roc.out, print.auc=TRUE, legacy.axes=TRUE,
+       xlab="False positive rate", ylab="True positive rate")
+  auc(roc.out)
+  
+}
+
+# USA TEST FUNCTION
+usa_test_function <- function(model, threshold) {
+  predictions_usa <- predict(model, newdata = new_usa_data[, -8], type = "response") # Apply logistic regression to the test set
+  predicted_labels <- ifelse(predictions_usa > threshold, 1, 0) # Convert predicted probabilities to class labels
+  accuracy <- sum(predicted_labels == Y_usa) / length(Y_usa) # Calculate accuracy
+  
+  print(accuracy) # Print the accuracy
+  plot_accuracy(predicted_labels, Y_usa, "USA: Simple LogReg")
+}
+
+################################################
+# UNBALANCED: Simple Logistic Regression model #
+logreg_model <- glm(Y_train ~ ., data = X_train, family = binomial)
+summary(logreg_model) # Print the summary of the model
+
+s<- summary(logreg_model)
+r2 <- 1 - (s$deviance/s$null.deviance)
+1/(1-r2)
+
+vif(logreg_model) # VIF
+
+# There aren't columns with VIF > 1/(1 - r)
+
+pred_logreg_model <- predict(logreg_model, newdata = X_test, type = "response") # Apply logistic regression to the test set
+hist(pred_logreg_model)
+
+predicted_labels <- ifelse(pred_logreg_model > 0.5, 1, 0) # Convert predicted probabilities to class labels
+plot_accuracy(pred_logreg_model, Y_test, "Simple LogReg")
+summary(logreg_model)
+
+usa_test_function(logreg_model, 0.5)
+
+##################################################################
+# UNBALANCED: Logistic Regression model using stepwise selection #
+stepwise_model <- stepAIC(glm(Y_train ~ ., data = X_train, family = binomial), direction = "both", trace = FALSE)
+summary(stepwise_model) # Print the summary of the model
+
+pred_stepwise_model <- predict(stepwise_model, newdata = X_test, type = "response") # Apply logistic regression to the test set
+hist(pred_stepwise_model)
+
+predicted_labels <- ifelse(pred_stepwise_model > 0.5, 1, 0) # Convert predicted probabilities to class labels
+plot_accuracy(pred_stepwise_model, Y_test, "Stepwise LogReg")
+
+usa_test_function(stepwise_model, 0.5)
+
+####################
+# Balanced Dataset #
+train_balanced <- ovun.sample(state_bi ~ ., data = new_data, method = "both", N = 17049, seed = 1)$data
+prop.table(table(train_balanced$state_bi))
+
+head(train_balanced)
+table(new_data$state_bi)
+table(train_balanced$state_bi)
+
+test_proportion <- 0.3 # (e.g., 70% training, 30% testing)
+num_test_samples <- round(nrow(train_balanced) * test_proportion) # Samples for the test set based on the proportion
+test_indices <- sample(nrow(train_balanced), num_test_samples) # Randomly select the row indices for the test set
+
+# Create the training and test sets for features (X) using indexing
+X_train_bal <- train_balanced[-test_indices, -7]
+X_test_bal <- train_balanced[test_indices, -7]
+
+# Create the training and test sets for the target variable (Y)
+Y_train_bal <- train_balanced[-test_indices, 7]
+Y_test_bal <- train_balanced[test_indices, 7]
+
+prop.table(table(Y_train_bal))
+prop.table(table(Y_test_bal))
+
+##############################################
+# BALANCED: Simple Logistic Regression model #
+logreg_model_bal <- glm(Y_train_bal ~ ., data = X_train_bal, family = binomial)
+summary(logreg_model_bal) # Print the summary of the model
+
+s<- summary(logreg_model_bal)
+r2 <- 1 - (s$deviance/s$null.deviance)
+1/(1-r2)
+
+vif(logreg_model_bal) # VIF
+
+# There aren't columns with VIF > 1/(1 - r)
+
+pred_logreg_model_bal <- predict(logreg_model_bal, newdata = X_test, type = "response") # Apply logistic regression to the test set
+hist(pred_logreg_model_bal)
+
+predicted_labels <- ifelse(pred_logreg_model_bal > 0.5, 1, 0) # Convert predicted probabilities to class labels
+plot_accuracy(pred_logreg_model_bal, Y_test, "Balanced: Simple LogReg")
+
+##########################
+# Balancing with weights #
+class_weights <- rep(1, nrow(X_train))
+sum(Y_train==0)/sum(Y_train==1)
+class_weights[Y_train == 1] <- 3
+
+
+balanced_model <- glm(Y_train ~ ., data = X_train, family = binomial, weights = class_weights) # Create a balanced logistic regression model
+summary(balanced_model) # Print the summary of the model
+
+s <- summary(balanced_model)
+r2 <- 1 - (s$deviance/s$null.deviance)
+1/(1-r2)
+
+vif(balanced_model) # VIF
+
+pred_balanced_model <- predict(balanced_model, newdata = X_test, type = "response") # Apply logistic regression to the test set
+hist(pred_balanced_model)
+
+predicted_labels <- ifelse(pred_balanced_model > 0.5, 1, 0) # Convert predicted probabilities to class labels
+plot_accuracy(pred_balanced_model, Y_test, "Balanced LogReg")
+
+usa_test_function(balanced_model, 0.7)
+
+###########################################################################
+# Logistic Regression model using stepwise selection and balanced weights #
+stepbalanced_model <- stepAIC(glm(Y_train_bal ~ ., data = X_train_bal, family = binomial, weights = class_weights), direction = "both", trace = FALSE)
+summary(stepbalanced_model) # Print the summary of the model
+
+pred_stepbalanced_model <- predict(stepbalanced_model, newdata = X_test, type = "response") # Apply logistic regression to the test set
+hist(pred_stepbalanced_model)
+
+predicted_labels <- ifelse(pred_stepbalanced_model > 0.5, 1, 0) # Convert predicted probabilities to class labels
+plot_accuracy(pred_stepbalanced_model, Y_test, "Stepwise Balanced LogReg")
+
+usa_test_function(stepbalanced_model, 0.7)
+
+############################################################################
+# We compare the results obtained with the four different models, plotting #
+# now an estimation of the logistic curve using the predictions given by   #
+# the models:                                                              #
+predicted_data <- data.frame(prob.of.State = pred_logreg_model, State = Y_test)
+predicted_data <- predicted_data[order(predicted_data$prob.of.State, decreasing = FALSE),]
+predicted_data$rank <-  1:nrow(predicted_data)
+
+a<- ggplot(data = predicted_data, aes(x = rank, y = prob.of.State)) +
+  geom_point(aes(color = as.factor(State)), alpha = 1, shape = 1, stroke = 1) +
+  xlab("Index")+ylab("Predicted probability") +
+  ggtitle("Estimated Logistic Curve - Simple GLM")
+
+predicted_data <- data.frame(prob.of.State = pred_stepwise_model, State = Y_test)
+predicted_data <- predicted_data[order(predicted_data$prob.of.State, decreasing = FALSE),]
+predicted_data$rank <-  1:nrow(predicted_data)
+
+b<- ggplot(data = predicted_data, aes(x = rank, y = prob.of.State)) +
+  geom_point(aes(color = as.factor(State)), alpha = 1, shape = 1, stroke = 1) +
+  xlab("Index")+ylab("Predicted probability") +
+  ggtitle("Estimated Logistic Curve - GLM with Stepwise")
+
+predicted_data <- data.frame(prob.of.State = pred_balanced_model, State = Y_test)
+predicted_data <- predicted_data[order(predicted_data$prob.of.State, decreasing = FALSE),]
+predicted_data$rank <-  1:nrow(predicted_data)
+
+c<- ggplot(data = predicted_data, aes(x = rank, y = prob.of.State)) +
+  geom_point(aes(color = as.factor(State)), alpha = 1, shape = 1, stroke = 1) +
+  xlab("Index")+ylab("Predicted probability")+
+  ggtitle("Estimated Logistic Curve - GLM with Balanced data")
+
+predicted_data <- data.frame(prob.of.State = pred_stepbalanced_model, State = Y_test)
+predicted_data <- predicted_data[order(predicted_data$prob.of.State, decreasing = FALSE),]
+predicted_data$rank <-  1:nrow(predicted_data)
+
+d<- ggplot(data = predicted_data, aes(x = rank, y = prob.of.State)) +
+  geom_point(aes(color = as.factor(State)), alpha = 1, shape = 1, stroke = 1) +
+  xlab("Index")+ylab("Predicted probability")+
+  ggtitle("Estimated Logistic Curve - GLM with Balanced data and Stepwise")
+
+grid.arrange(a, b, c, d, nrow = 2)
+
+##################################################
+# Discriminant Analysis                          #
+# CHECK: Normality Requirement of the covariates #
+# We apply the Shapiro - Wilks test on each covariate, considering
+# the two different classes
+# Create a new dataset with an added column
+sample_data_bal <- X_train_bal %>%
+  mutate(Y_train_bal)
+
+sample <- sample_data_bal[sample(nrow(sample_data_bal), 5000), ]
+prop.table(table(sample$Y_train_bal))
+
+# Shapiro-Wilk normality test
+shapiro.test(sample$main_category[sample$Y_train_bal == 0])
+shapiro.test(sample$main_category[sample$Y_train_bal == 1])
+
+shapiro.test(sample$usd_goal_real[sample$Y_train_bal == 0])
+shapiro.test(sample$usd_goal_real[sample$Y_train_bal == 1])
+
+shapiro.test(sample$launch_year[sample$Y_train_bal == 0])
+shapiro.test(sample$launch_year[sample$Y_train_bal == 1])
+
+shapiro.test(sample$category[sample$Y_train_bal == 0])
+shapiro.test(sample$category[sample$Y_train_bal == 1])
+
+shapiro.test(sample$country[sample$Y_train_bal == 0])
+shapiro.test(sample$country[sample$Y_train_bal == 1])
+
+shapiro.test(sample$days_between[sample$Y_train_bal == 0])
+shapiro.test(sample$days_between[sample$Y_train_bal == 1])
+
+# CONCLUSION #
+# Although this assumption is not satisfied, we try in any case to apply 
+# the models to our data, aware of the potential gaps that these could show.
+
+######################################
+# Linear Discriminant Analysis (LDA) #
+######################################
+
+###################
+# UNBALANCED DATA #
+g1 <- ggplot(data = new_data, aes(y = usd_goal_real, fill = 2)) + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) + 
+  theme(legend.position="none") + 
+  ylab("Usd Goal Real")
+
+g2 <- ggplot(data = new_data, aes(y = days_between, fill = 2)) + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) + 
+  theme(legend.position="none") + 
+  ylab("Days Between")
+
+grid.arrange(g1, g2, nrow = 1)
+
+# We look for the presence of outliers:
+chisq.out.test(new_data$usd_goal_real)
+chisq.out.test(new_data$days_between)
+which(new_data$days_between == 73.9583333333333)
+
+####################
+# Simple LDA model #
+lda_compl<- lda(Y_train ~ ., family = "binomial", data = X_train)
+lda_compl
+
+pred_lda_compl <- predict(lda_compl, X_test, type = "response")
+post_lda_compl <- pred_lda_compl$posterior
+
+predicted_labels <- as.factor(ifelse(post_lda_compl[,2] > 0.5, 1, 0))
+accuracy <- sum(predicted_labels == Y_test) / length(Y_test) # Calculate accuracy
+
+print(accuracy) # Print the accuracy
+plot_accuracy(post_lda_compl[,2], Y_test, "Simple LDA Unbalanced")
+
+ldahist(pred_lda_compl$x[,1], g = pred_lda_compl$class, col = 2)
+
+
+#################
+# BALANCED DATA #
+g1 <- ggplot(data = train_balanced, aes(y = usd_goal_real, fill = 2)) + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) + 
+  theme(legend.position="none") + 
+  ylab("Usd Goal Real")
+
+g1
+
+g2 <- ggplot(data = train_balanced, aes(y = days_between, fill = 2)) + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) + 
+  theme(legend.position="none") + 
+  ylab("Days Between")
+
+g2
+
+grid.arrange(g1, g2, nrow = 1)
+
+# We look for the presence of outliers:
+chisq.out.test(train_balanced$usd_goal_real)
+chisq.out.test(train_balanced$days_between)
+which(train_balanced$days_between == 73.9583333333333)
+
+####################
+# Simple LDA model #
+lda_bal <- lda(Y_train_bal ~ ., family = "binomial", data = X_train_bal)
+lda_bal
+
+pred_lda_bal <- predict(lda_bal, X_test, type = "response")
+post_lda_bal <- pred_lda_bal$posterior
+
+predicted_labels <- as.factor(ifelse(post_lda_bal[,2] > 0.5, 1, 0))
+accuracy <- sum(predicted_labels == Y_test) / length(Y_test) # Calculate accuracy
+
+print(accuracy) # Print the accuracy
+plot_accuracy(post_lda_bal[,2], Y_test, "Simple LDA Balanced")
+
+ldahist(pred_lda_bal$x[,1], g = pred_lda_bal$class, col = 2)
+
+#########################################
+# Quadratic Discriminant Analysis (QDA) #
+#########################################
+
+################################
+# Unbalanced: Simple QDA model #
+qda_compl<- qda(Y_train ~ .,family = "binomial", data = X_train)
+
+pred_qda_compl<- predict(qda_compl, X_test, type = "response")
+post_qda_compl<- pred_qda_compl$posterior
+
+predicted_labels <- as.factor(ifelse(post_qda_compl[,2] > 0.5, 1, 0))
+accuracy <- sum(predicted_labels == Y_test) / length(Y_test) # Calculate accuracy
+
+print(accuracy) # Print the accuracy
+plot_accuracy(post_qda_compl[,2], Y_test, "Simple QDA Unbalanced")
+
+##############################
+# Balanced: Simple QDA model #
+qda_bal<- qda(Y_train_bal ~ .,family = "binomial", data = X_train_bal)
+
+pred_qda_bal<- predict(qda_bal, X_test, type = "response")
+post_qda_bal<- pred_qda_bal$posterior
+
+predicted_labels <- as.factor(ifelse(post_qda_bal[,2] > 0.5, 1, 0))
+accuracy <- sum(predicted_labels == Y_test) / length(Y_test) # Calculate accuracy
+
+print(accuracy) # Print the accuracy
+plot_accuracy(post_qda_bal[,2], Y_test, "Simple QDA Balanced")
+
+##########################
+# Regularized Regression #
+##########################
+
+####################
+# Ridge Regression #
+X_train_bal_mat<- as.matrix(X_train_bal)
+X_test_mat<- as.matrix(X_test)
+
+ridge_cv <- cv.glmnet(X_train_bal_mat, Y_train_bal, alpha = 0, family = "binomial", type.measure = "class")
+plot(ridge_cv, ylim = c(0.4, 0.55))
+
+lambda_opt_ridge <- ridge_cv$lambda.min
+lambda_opt_ridge
+
+pred_ridge<- predict(ridge_cv, X_test_mat, type = "class", s = lambda_opt_ridge)
+pred_ridge
+plot_accuracy(pred_ridge, Y_test, "Ridge Regression")
+
+####################
+# Lasso Regression #
+lasso_cv <- cv.glmnet(X_train_bal_mat, Y_train, alpha = 1, family = "binomial", type.measure = "class")
+plot(lasso_cv)
+
+lambda_opt_lasso <- lasso_cv$lambda.min
+lambda_opt_lasso
+
+pred_lasso<- predict(lasso_cv, X_test_mat, type = "class", s = lambda_opt_lasso)
+plot_accuracy(pred_lasso, Y_test, "Ridge Regression")
+
+#############################
+# UNBALANCED: Random Forest #
+#############################
+
+rf_model <- randomForest(X_train, Y_train)
+summary(rf_model)
+
+feature_importance <- importance(rf_model)
+ranked_features <- sort(feature_importance[, "MeanDecreaseGini"], decreasing = TRUE)
+ranked_features
+
+probabilities <- predict(rf_model, newdata = X_test, type = "prob")
+predictions <- ifelse(probabilities[, 2] > 0.5, 1, 0)
+
+plot_accuracy(probabilities[, 2], Y_test, "Random Forest Unbalanced")
+
+###########################
+# BALANCED: Random Forest #
+###########################
+
+rf_model <- randomForest(X_train_bal, Y_train_bal)
+summary(rf_model)
+
+feature_importance <- importance(rf_model)
+ranked_features <- sort(feature_importance[, "MeanDecreaseGini"], decreasing = TRUE)
+ranked_features
+
+probabilities <- predict(rf_model, newdata = X_test, type = "prob")
+predictions <- ifelse(probabilities[, 2] > 0.5, 1, 0)
+
+plot_accuracy(probabilities[, 2], Y_test, "Random Forest Balanced")
+
+######################
+# USA: Random Forest #
+######################
+
+rf_model <- randomForest(X_train_bal, Y_train_bal)
+summary(rf_model)
+
+
+probabilities <- predict(rf_model, newdata = X_usa, type = "prob")
+
+plot_accuracy(probabilities[, 2], Y_usa, "Random Forest Balanced")
+
+
+hist(probabilities)
+
+########
+# K-NN #
+########
+knn_predictions <- knn(train = X_train, test = X_test, cl = Y_train, k = 3)
+
+
+matrix <- table(Y_test, knn_predictions)
+if (dim(matrix)[2] == 1){
+  matrix <- cbind(matrix, c(0, 0))
+}
+print(matrix)
+
+accuracy <- ( matrix[[1,1]] + matrix[[2,2]] ) / ( matrix[[1,1]] + matrix[[1,2]] + matrix[[2,1]] + matrix[[2,2]] )
+precision <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[1,2]] )
+recall <- matrix[[2,2]] / ( matrix[[2,2]] + matrix[[2,1]] )
+
+print(paste("Accuracy: ", accuracy))
+print(paste("Recall: ", recall))
+print(paste("Precision: ", precision))
+
+
